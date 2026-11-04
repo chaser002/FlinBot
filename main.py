@@ -33,7 +33,7 @@ from aiogram.types import (
 
 # ───────────────────────── НАСТРОЙКИ ─────────────────────────
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8868354676:AAFF3u0w7y_k80X9EphALrwb1n5uY_qjc3k")
-SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "-5164370501"))  # группа операторов
+SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "-1004390723972"))  # группа операторов
 PROJECT_NAME = os.getenv("PROJECT_NAME", "FlinRP")
 SITE_URL = os.getenv("SITE_URL", "https://flin-rp.online/#")
 FORUM_URL = os.getenv("FORUM_URL", "https://flin-rp.online/forum/")
