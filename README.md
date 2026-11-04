@@ -24,9 +24,9 @@
 
 | Переменная | Описание |
 |-----------|----------|
-| `BOT_TOKEN` | токен от @BotFather (обязательно) |
+| `BOT_TOKEN` | 8868354676:AAHR-M15Q502kjzWZk6ak1VA6TKZ4pBvras |
 | `SUPPORT_CHAT_ID` | ID группы операторов (узнать командой `/chatid` в группе) |
-| `PROJECT_NAME` | название проекта |
+| `PROJECT_NAME` | FlinRPbot |
 | `SITE_URL`, `FORUM_URL`, `SHOP_URL` | ссылки для кнопок; пустые кнопки не показываются |
 | `BANNER_PATH` | путь к картинке меню, по умолчанию `banner.jpg` |
 
