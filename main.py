@@ -1,5 +1,5 @@
 """
-Telegram-бот техподдержки: 2FA, связь с оператором, восстановление пароля.
+Telegram-бот техподдержки: тикеты, 2FA, восстановление пароля.
 Библиотека: aiogram 3.x. Настройки берутся из переменных окружения.
 """
 import asyncio
@@ -16,8 +16,8 @@ import pyotp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.filters import Command, CommandStart
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -28,17 +28,28 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    ReactionTypeEmoji,
 )
 
 # ───────────────────────── НАСТРОЙКИ ─────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8868354676:AAFF3u0w7y_k80X9EphALrwb1n5uY_qjc3k")
-SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "-1004473683223"))  # группа операторов
-PROJECT_NAME = os.getenv("PROJECT_NAME", "FlinRP")
-SITE_URL = os.getenv("SITE_URL", "https://flin-rp.online/#")
-FORUM_URL = os.getenv("FORUM_URL", "https://flin-rp.online/forum/")
-SHOP_URL = os.getenv("SHOP_URL", "https://flin-rp.online/#donate")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "0"))  # группа операторов
+PROJECT_NAME = os.getenv("PROJECT_NAME", "Мой проект")
+SITE_URL = os.getenv("SITE_URL", "")
+FORUM_URL = os.getenv("FORUM_URL", "")
+SHOP_URL = os.getenv("SHOP_URL", "")
 BANNER_PATH = os.getenv("BANNER_PATH", "banner.jpg")  # картинка над меню
 DB_PATH = os.getenv("DB_PATH", "bot.db")
+
+# Темы тикетов: можно менять и добавлять свои
+TICKET_CATEGORIES = [
+    "🔐 Проблема с аккаунтом",
+    "💳 Донат / оплата",
+    "🚨 Жалоба на игрока",
+    "🐞 Баг / ошибка",
+    "❓ Другое",
+]
+STATUS_TITLES = {"open": "🟡 Новый", "progress": "🔵 В работе", "closed": "🟢 Закрыт"}
 
 # ───────────────────────── ТЕКСТЫ ─────────────────────────
 T = {
@@ -51,11 +62,11 @@ T = {
     "bad_nick": "Ник может содержать только латинские буквы, цифры и символы _ - . (3–24 символа). Попробуйте ещё раз:",
     "not_owner": (
         "Этот аккаунт привязан к другому Telegram или не найден.\n"
-        "Если это ваш аккаунт, обратитесь в службу поддержки."
+        "Если это ваш аккаунт, создайте тикет в службе поддержки."
     ),
     "2fa_already": (
         "Двухфакторная защита для этого аккаунта уже включена.\n"
-        "Чтобы отключить её, обратитесь в службу поддержки."
+        "Чтобы отключить её, создайте тикет в службе поддержки."
     ),
     "2fa_setup": (
         "1. Установите приложение-аутентификатор (Google Authenticator, Authy и т. п.).\n"
@@ -69,23 +80,31 @@ T = {
     "ask_code": "Для подтверждения отправьте 6-значный код из приложения-аутентификатора:",
     "reset_denied": (
         "Не удалось подтвердить аккаунт. Он должен быть привязан к этому Telegram.\n"
-        "Если нужна помощь, обратитесь в службу поддержки."
+        "Если нужна помощь, создайте тикет в службе поддержки."
     ),
-    "reset_limit": "Слишком много запросов. Попробуйте позже или напишите в поддержку.",
+    "reset_limit": "Слишком много запросов. Попробуйте позже или создайте тикет.",
     "reset_ok": (
         "✅ Пароль сброшен.\n\nНовый временный пароль:\n<tg-spoiler>{password}</tg-spoiler>\n\n"
         "Сообщение удалится через минуту. Войдите и сразу смените пароль."
     ),
+    # тикеты
     "support_off": "Служба поддержки временно недоступна.",
-    "support_ask": "Опишите проблему одним или несколькими сообщениями. Оператор ответит прямо здесь.",
-    "support_sent": "✅ Обращение принято. Ожидайте ответа оператора.",
-    "support_end": "Обращение завершено.",
-    "operator_reply": "👨‍💼 <b>Ответ службы поддержки:</b>",
-    "ticket_header": (
-        "🆘 <b>Новое обращение</b>\n"
-        "Пользователь: {name} {username}\nID: <code>{uid}</code>\n\n"
-        "Чтобы ответить, используйте «Ответить» на любое сообщение ниже."
+    "support_menu": "Выберите тему обращения:",
+    "ticket_exists": (
+        "У вас уже есть открытый тикет <b>#{id}</b>.\n"
+        "Просто напишите сообщение сюда, оно будет добавлено в тикет и передано оператору."
     ),
+    "ticket_ask": "Тема: <b>{category}</b>\n\nОпишите проблему одним сообщением. Можно приложить скриншот.",
+    "ticket_created": (
+        "✅ Тикет <b>#{id}</b> создан.\n"
+        "Оператор ответит прямо здесь. Новые сообщения будут добавляться в этот тикет."
+    ),
+    "ticket_failed": "Не удалось создать тикет. Попробуйте позже.",
+    "ticket_taken": "🔵 Ваш тикет <b>#{id}</b> принят в работу.",
+    "ticket_closed_user": "🟢 Тикет <b>#{id}</b> закрыт. Если проблема осталась, создайте новый.",
+    "operator_reply": "👨‍💼 <b>Ответ по тикету #{id}:</b>",
+    "my_tickets_empty": "У вас пока нет тикетов.",
+    "flood": "Слишком много сообщений. Подождите минуту.",
 }
 
 # ───────────────────────── БАЗА ДАННЫХ ─────────────────────────
@@ -99,9 +118,19 @@ db.executescript(
         totp_secret TEXT,
         totp_enabled INTEGER DEFAULT 0
     );
-    CREATE TABLE IF NOT EXISTS relay (
+    CREATE TABLE IF NOT EXISTS tickets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        user_name TEXT NOT NULL,
+        category TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        assignee TEXT,
+        card_msg_id INTEGER,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS ticket_relay (
         chat_msg_id INTEGER PRIMARY KEY,
-        user_id INTEGER NOT NULL
+        ticket_id INTEGER NOT NULL
     );
     """
 )
@@ -150,6 +179,7 @@ backend = Backend()
 NICK_RE = re.compile(r"^[A-Za-z0-9_.\-]{3,24}$")
 PASSWORD_ALPHABET = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 reset_log = {}  # user_id -> список времён сбросов
+msg_times = {}  # user_id -> времена сообщений (антифлуд)
 background = set()
 
 
@@ -173,10 +203,30 @@ def cancel_kb():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]])
 
 
-def end_kb():
+def categories_kb():
+    rows = [
+        [InlineKeyboardButton(text=title, callback_data=f"cat:{i}")]
+        for i, title in enumerate(TICKET_CATEGORIES)
+    ]
+    rows.append([InlineKeyboardButton(text="📋 Мои тикеты", callback_data="mytickets")])
+    rows.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def user_ticket_kb(tid):
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="✅ Завершить обращение", callback_data="end_support")]]
+        inline_keyboard=[[InlineKeyboardButton(text="❌ Закрыть тикет", callback_data=f"u_close:{tid}")]]
     )
+
+
+def ops_kb(tid, status):
+    if status == "closed":
+        return None
+    row = []
+    if status == "open":
+        row.append(InlineKeyboardButton(text="🙋 Взять в работу", callback_data=f"t_take:{tid}"))
+    row.append(InlineKeyboardButton(text="✅ Закрыть", callback_data=f"t_close:{tid}"))
+    return InlineKeyboardMarkup(inline_keyboard=[row])
 
 
 async def send_menu(bot: Bot, chat_id: int, name: str):
@@ -197,17 +247,71 @@ def make_qr(uri):
     return buf.getvalue()
 
 
-def remember(chat_msg_id, user_id):
-    db.execute("INSERT OR REPLACE INTO relay VALUES (?, ?)", (chat_msg_id, user_id))
-    db.commit()
-
-
 async def delete_later(msg: Message, delay: int):
     await asyncio.sleep(delay)
     try:
         await msg.delete()
     except TelegramBadRequest:
         pass
+
+
+def flooding(uid, limit=15, window=60):
+    now = time.time()
+    times = [t for t in msg_times.get(uid, []) if now - t < window]
+    times.append(now)
+    msg_times[uid] = times
+    return len(times) > limit
+
+
+# ───────────────────────── ТИКЕТЫ: БАЗА ─────────────────────────
+def get_ticket(tid):
+    return db.execute("SELECT * FROM tickets WHERE id=?", (tid,)).fetchone()
+
+
+def open_ticket(user_id):
+    return db.execute(
+        "SELECT * FROM tickets WHERE user_id=? AND status!='closed' ORDER BY id DESC LIMIT 1", (user_id,)
+    ).fetchone()
+
+
+def link_msg(chat_msg_id, tid):
+    db.execute("INSERT OR REPLACE INTO ticket_relay VALUES (?, ?)", (chat_msg_id, tid))
+    db.commit()
+
+
+def card_text(t):
+    lines = [
+        f"🎫 <b>Тикет #{t['id']}</b>",
+        f"Категория: {html.escape(t['category'])}",
+        f"Игрок: {html.escape(t['user_name'])} (<code>{t['user_id']}</code>)",
+        f"Статус: {STATUS_TITLES[t['status']]}",
+    ]
+    if t["assignee"]:
+        lines.append(f"Оператор: {html.escape(t['assignee'])}")
+    if t["status"] != "closed":
+        lines.append("\nЧтобы ответить игроку, нажмите «Ответить» на любое сообщение этого тикета.")
+    return "\n".join(lines)
+
+
+async def refresh_card(bot: Bot, tid):
+    t = get_ticket(tid)
+    if not t or not t["card_msg_id"]:
+        return
+    try:
+        await bot.edit_message_text(
+            card_text(t),
+            chat_id=SUPPORT_CHAT_ID,
+            message_id=t["card_msg_id"],
+            reply_markup=ops_kb(tid, t["status"]),
+        )
+    except TelegramBadRequest:
+        pass
+
+
+def person(user):
+    if user is None:
+        return "Оператор"
+    return user.full_name
 
 
 # ───────────────────────── СОСТОЯНИЯ ─────────────────────────
@@ -221,8 +325,8 @@ class Reset(StatesGroup):
     code = State()
 
 
-class Support(StatesGroup):
-    chatting = State()
+class Ticket(StatesGroup):
+    text = State()
 
 
 common_router = Router()
@@ -377,67 +481,212 @@ async def reset_code(message: Message, state: FSMContext):
     await message.answer(T["2fa_bad_code"].format(left=5 - tries), reply_markup=cancel_kb())
 
 
-# ───────────────────────── СВЯЗЬ С ОПЕРАТОРОМ ─────────────────────────
+# ───────────────────────── ТИКЕТЫ: ИГРОК ─────────────────────────
 @user_router.callback_query(F.data == "support")
 async def cb_support(call: CallbackQuery, state: FSMContext):
+    await call.answer()
+    await state.clear()
+    if not SUPPORT_CHAT_ID:
+        await call.message.answer(T["support_off"])
+        return
+    t = open_ticket(call.from_user.id)
+    if t:
+        await call.message.answer(T["ticket_exists"].format(id=t["id"]), reply_markup=user_ticket_kb(t["id"]))
+        return
+    await call.message.answer(T["support_menu"], reply_markup=categories_kb())
+
+
+@user_router.callback_query(F.data.startswith("cat:"))
+async def cb_category(call: CallbackQuery, state: FSMContext):
     await call.answer()
     if not SUPPORT_CHAT_ID:
         await call.message.answer(T["support_off"])
         return
-    await state.set_state(Support.chatting)
-    await state.update_data(started=False)
-    await call.message.answer(T["support_ask"], reply_markup=end_kb())
+    t = open_ticket(call.from_user.id)
+    if t:
+        await call.message.answer(T["ticket_exists"].format(id=t["id"]), reply_markup=user_ticket_kb(t["id"]))
+        return
+    try:
+        category = TICKET_CATEGORIES[int(call.data.split(":")[1])]
+    except (ValueError, IndexError):
+        return
+    await state.set_state(Ticket.text)
+    await state.update_data(category=category)
+    await call.message.answer(T["ticket_ask"].format(category=html.escape(category)), reply_markup=cancel_kb())
 
 
-@user_router.callback_query(F.data == "end_support")
-async def cb_end_support(call: CallbackQuery, state: FSMContext, bot: Bot):
-    await call.answer()
-    data = await state.get_data()
-    if data.get("started") and SUPPORT_CHAT_ID:
-        await bot.send_message(SUPPORT_CHAT_ID, f"✅ Пользователь <code>{call.from_user.id}</code> завершил обращение.")
-    await state.clear()
-    await call.message.answer(T["support_end"])
-    await send_menu(bot, call.message.chat.id, call.from_user.first_name)
-
-
-@user_router.message(Support.chatting)
-async def support_user_message(message: Message, state: FSMContext, bot: Bot):
+@user_router.message(Ticket.text)
+async def ticket_create(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     user = message.from_user
-    first = not data.get("started")
-    if first:
-        username = f"@{user.username}" if user.username else ""
-        header = await bot.send_message(
-            SUPPORT_CHAT_ID,
-            T["ticket_header"].format(name=html.escape(user.full_name), username=username, uid=user.id),
+    if open_ticket(user.id):
+        await state.clear()
+        return
+    name = user.full_name + (f" @{user.username}" if user.username else "")
+    cur = db.execute(
+        "INSERT INTO tickets(user_id, user_name, category, created_at) VALUES (?, ?, ?, ?)",
+        (user.id, name, data.get("category", "Другое"), int(time.time())),
+    )
+    db.commit()
+    tid = cur.lastrowid
+    try:
+        card = await bot.send_message(
+            SUPPORT_CHAT_ID, card_text(get_ticket(tid)), reply_markup=ops_kb(tid, "open")
         )
-        remember(header.message_id, user.id)
-        await state.update_data(started=True)
-    forwarded = await message.forward(SUPPORT_CHAT_ID)
-    remember(forwarded.message_id, user.id)
-    if first:
-        await message.answer(T["support_sent"], reply_markup=end_kb())
+        link_msg(card.message_id, tid)
+        db.execute("UPDATE tickets SET card_msg_id=? WHERE id=?", (card.message_id, tid))
+        db.commit()
+        forwarded = await message.forward(SUPPORT_CHAT_ID)
+        link_msg(forwarded.message_id, tid)
+    except TelegramAPIError:
+        logging.exception("Не удалось отправить тикет в группу поддержки")
+        db.execute("DELETE FROM tickets WHERE id=?", (tid,))
+        db.commit()
+        await state.clear()
+        await message.answer(T["ticket_failed"])
+        return
+    await state.clear()
+    await message.answer(T["ticket_created"].format(id=tid), reply_markup=user_ticket_kb(tid))
 
 
-# Ответ оператора: «Ответить» на сообщение бота в группе поддержки
+@user_router.callback_query(F.data == "mytickets")
+async def cb_mytickets(call: CallbackQuery):
+    await call.answer()
+    rows = db.execute(
+        "SELECT * FROM tickets WHERE user_id=? ORDER BY id DESC LIMIT 5", (call.from_user.id,)
+    ).fetchall()
+    if not rows:
+        await call.message.answer(T["my_tickets_empty"])
+        return
+    lines = [f"#{r['id']} · {html.escape(r['category'])} · {STATUS_TITLES[r['status']]}" for r in rows]
+    current = next((r for r in rows if r["status"] != "closed"), None)
+    await call.message.answer(
+        "📋 <b>Ваши тикеты:</b>\n" + "\n".join(lines),
+        reply_markup=user_ticket_kb(current["id"]) if current else None,
+    )
+
+
+@user_router.callback_query(F.data.startswith("u_close:"))
+async def cb_user_close(call: CallbackQuery, bot: Bot):
+    try:
+        tid = int(call.data.split(":")[1])
+    except ValueError:
+        await call.answer()
+        return
+    t = get_ticket(tid)
+    if not t or t["user_id"] != call.from_user.id:
+        await call.answer()
+        return
+    if t["status"] == "closed":
+        await call.answer("Тикет уже закрыт.")
+        return
+    db.execute("UPDATE tickets SET status='closed' WHERE id=?", (tid,))
+    db.commit()
+    await refresh_card(bot, tid)
+    try:
+        await bot.send_message(
+            SUPPORT_CHAT_ID, f"🟢 Игрок закрыл тикет #{tid}.", reply_to_message_id=t["card_msg_id"]
+        )
+    except TelegramAPIError:
+        pass
+    await call.answer("Тикет закрыт.")
+    await call.message.answer(T["ticket_closed_user"].format(id=tid))
+
+
+# ───────────────────────── ТИКЕТЫ: ОПЕРАТОРЫ ─────────────────────────
+@ops_router.callback_query(F.data.startswith("t_take:"), F.message.chat.id == SUPPORT_CHAT_ID)
+async def cb_take(call: CallbackQuery, bot: Bot):
+    try:
+        tid = int(call.data.split(":")[1])
+    except ValueError:
+        await call.answer()
+        return
+    t = get_ticket(tid)
+    if not t or t["status"] == "closed":
+        await call.answer("Тикет уже закрыт.", show_alert=True)
+        return
+    db.execute("UPDATE tickets SET status='progress', assignee=? WHERE id=?", (person(call.from_user), tid))
+    db.commit()
+    await refresh_card(bot, tid)
+    await call.answer("Вы взяли тикет в работу.")
+    try:
+        await bot.send_message(t["user_id"], T["ticket_taken"].format(id=tid))
+    except TelegramAPIError:
+        pass
+
+
+@ops_router.callback_query(F.data.startswith("t_close:"), F.message.chat.id == SUPPORT_CHAT_ID)
+async def cb_op_close(call: CallbackQuery, bot: Bot):
+    try:
+        tid = int(call.data.split(":")[1])
+    except ValueError:
+        await call.answer()
+        return
+    t = get_ticket(tid)
+    if not t or t["status"] == "closed":
+        await call.answer("Тикет уже закрыт.", show_alert=True)
+        return
+    db.execute(
+        "UPDATE tickets SET status='closed', assignee=COALESCE(assignee, ?) WHERE id=?",
+        (person(call.from_user), tid),
+    )
+    db.commit()
+    await refresh_card(bot, tid)
+    await call.answer("Тикет закрыт.")
+    try:
+        await bot.send_message(t["user_id"], T["ticket_closed_user"].format(id=tid))
+    except TelegramAPIError:
+        pass
+
+
+# Ответ оператора: «Ответить» на карточку или пересланное сообщение тикета
 @ops_router.message(F.chat.id == SUPPORT_CHAT_ID, F.reply_to_message)
 async def operator_reply(message: Message, bot: Bot):
     row = db.execute(
-        "SELECT user_id FROM relay WHERE chat_msg_id=?", (message.reply_to_message.message_id,)
+        "SELECT t.* FROM ticket_relay r JOIN tickets t ON t.id = r.ticket_id WHERE r.chat_msg_id=?",
+        (message.reply_to_message.message_id,),
     ).fetchone()
     if not row:
         return
+    if row["status"] == "closed":
+        await message.reply(f"Тикет #{row['id']} уже закрыт.")
+        return
     try:
-        await bot.send_message(row["user_id"], T["operator_reply"])
+        await bot.send_message(row["user_id"], T["operator_reply"].format(id=row["id"]))
         await message.copy_to(row["user_id"])
     except TelegramForbiddenError:
-        await message.reply("Не удалось доставить: пользователь заблокировал бота.")
+        await message.reply("Не удалось доставить: игрок заблокировал бота.")
+        return
+    if row["status"] == "open":
+        db.execute(
+            "UPDATE tickets SET status='progress', assignee=? WHERE id=?", (person(message.from_user), row["id"])
+        )
+        db.commit()
+        await refresh_card(bot, row["id"])
 
 
-# Всё остальное в личке: показать меню
-@user_router.message()
-async def fallback(message: Message, bot: Bot):
-    await send_menu(bot, message.chat.id, message.from_user.first_name)
+# ───────────────────────── СООБЩЕНИЯ ИГРОКА ВНЕ СОСТОЯНИЙ ─────────────────────────
+# Если у игрока есть открытый тикет, сообщение добавляется в него. Иначе показываем меню.
+@user_router.message(StateFilter(None))
+async def user_message(message: Message, bot: Bot):
+    t = open_ticket(message.from_user.id)
+    if not t or not SUPPORT_CHAT_ID:
+        await send_menu(bot, message.chat.id, message.from_user.first_name)
+        return
+    if flooding(message.from_user.id):
+        await message.answer(T["flood"])
+        return
+    try:
+        forwarded = await message.forward(SUPPORT_CHAT_ID)
+        link_msg(forwarded.message_id, t["id"])
+    except TelegramAPIError:
+        logging.exception("Не удалось переслать сообщение в тикет")
+        await message.answer(T["ticket_failed"])
+        return
+    try:
+        await message.react([ReactionTypeEmoji(emoji="👍")])
+    except TelegramBadRequest:
+        pass
 
 
 # ───────────────────────── ЗАПУСК ─────────────────────────
