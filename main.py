@@ -31,7 +31,7 @@ from aiogram.types import (
 )
 
 # ───────────────────────── НАСТРОЙКИ ─────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8868354676:AAHR-M15Q502kjzWZk6ak1VA6TKZ4pBvras")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8868354676:AAFF3u0w7y_k80X9EphALrwb1n5uY_qjc3k")
 SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "0"))  # группа операторов
 PROJECT_NAME = os.getenv("PROJECT_NAME", "FlinRPbot")
 SITE_URL = os.getenv("SITE_URL", "")
