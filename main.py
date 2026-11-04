@@ -15,7 +15,7 @@ import time
 import pyotp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from aiogram.enums import ContentType, ParseMode
 from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -32,13 +32,14 @@ from aiogram.types import (
 )
 
 # ───────────────────────── НАСТРОЙКИ ─────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8868354676:AAFF3u0w7y_k80X9EphALrwb1n5uY_qjc3k")
-SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "-1004390723972"))  # группа операторов
-SUPPORT_THREAD_ID = int(os.getenv("SUPPORT_THREAD_ID", "3")) or None  # ветка (тема) для тикетов, необязательно
-PROJECT_NAME = os.getenv("PROJECT_NAME", "FlinRP")
-SITE_URL = os.getenv("SITE_URL", "https://flin-rp.online/#")
-FORUM_URL = os.getenv("FORUM_URL", "https://flin-rp.online/forum/")
-SHOP_URL = os.getenv("SHOP_URL", "https://flin-rp.online/#donate")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "0"))  # группа операторов
+SUPPORT_THREAD_ID = int(os.getenv("SUPPORT_THREAD_ID", "0")) or None  # ветка-очередь для новых тикетов, необязательно
+TICKET_TOPICS = os.getenv("TICKET_TOPICS", "1") != "0"  # отдельная ветка на каждый взятый тикет (нужны Темы в группе)
+PROJECT_NAME = os.getenv("PROJECT_NAME", "Мой проект")
+SITE_URL = os.getenv("SITE_URL", "")
+FORUM_URL = os.getenv("FORUM_URL", "")
+SHOP_URL = os.getenv("SHOP_URL", "")
 BANNER_PATH = os.getenv("BANNER_PATH", "banner.jpg")  # картинка над меню
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
@@ -46,10 +47,15 @@ DB_PATH = os.getenv("DB_PATH", "bot.db")
 TICKET_CATEGORIES = [
     "🔐 Проблема с аккаунтом",
     "💳 Донат / оплата",
+    "🚨 Жалоба на игрока",
     "🐞 Баг / ошибка",
     "❓ Другое",
 ]
 STATUS_TITLES = {"open": "🟡 Новый", "progress": "🔵 В работе", "closed": "🟢 Закрыт"}
+RELAY_TYPES = (
+    ContentType.TEXT, ContentType.PHOTO, ContentType.DOCUMENT, ContentType.VIDEO, ContentType.VOICE,
+    ContentType.AUDIO, ContentType.STICKER, ContentType.VIDEO_NOTE, ContentType.ANIMATION,
+)
 
 # ───────────────────────── ТЕКСТЫ ─────────────────────────
 T = {
@@ -134,6 +140,12 @@ db.executescript(
     );
     """
 )
+
+
+# Миграция: колонка с ID ветки тикета (для баз, созданных старой версией бота)
+if "topic_id" not in [r["name"] for r in db.execute("PRAGMA table_info(tickets)")]:
+    db.execute("ALTER TABLE tickets ADD COLUMN topic_id INTEGER")
+    db.commit()
 
 
 # ───────────────── ИНТЕГРАЦИЯ С ИГРОВЫМ СЕРВЕРОМ ─────────────────
@@ -312,6 +324,113 @@ def person(user):
     if user is None:
         return "Оператор"
     return user.full_name
+
+
+def topic_title(t):
+    return f"#{t['id']} · {t['category']} · {t['user_name']}"[:120]
+
+
+async def move_to_topic(bot: Bot, tid):
+    """Создаёт ветку тикета, переносит туда карточку и переписку, убирает их из очереди."""
+    t = get_ticket(tid)
+    rows = db.execute(
+        "SELECT chat_msg_id FROM ticket_relay WHERE ticket_id=? ORDER BY chat_msg_id", (tid,)
+    ).fetchall()
+    old_ids = [r["chat_msg_id"] for r in rows]
+    old_card = t["card_msg_id"]
+    try:
+        topic = await bot.create_forum_topic(SUPPORT_CHAT_ID, topic_title(t))
+    except TelegramAPIError as e:
+        logging.warning("Не удалось создать ветку для тикета #%s: %s", tid, e)
+        return None
+    topic_id = topic.message_thread_id
+    try:
+        db.execute("UPDATE tickets SET topic_id=? WHERE id=?", (topic_id, tid))
+        db.commit()
+        card = await bot.send_message(
+            SUPPORT_CHAT_ID,
+            card_text(get_ticket(tid)),
+            reply_markup=ops_kb(tid, "progress"),
+            message_thread_id=topic_id,
+        )
+    except TelegramAPIError as e:
+        logging.warning("Не удалось отправить карточку в ветку тикета #%s: %s", tid, e)
+        db.execute("UPDATE tickets SET topic_id=NULL WHERE id=?", (tid,))
+        db.commit()
+        try:
+            await bot.delete_forum_topic(SUPPORT_CHAT_ID, topic_id)
+        except TelegramAPIError:
+            pass
+        return None
+    db.execute("UPDATE tickets SET card_msg_id=? WHERE id=?", (card.message_id, tid))
+    db.commit()
+    link_msg(card.message_id, tid)
+    for mid in old_ids:
+        if mid == old_card:
+            continue
+        try:
+            copied = await bot.copy_message(SUPPORT_CHAT_ID, SUPPORT_CHAT_ID, mid, message_thread_id=topic_id)
+            link_msg(copied.message_id, tid)
+        except TelegramAPIError as e:
+            logging.warning("Не удалось перенести сообщение %s тикета #%s: %s", mid, tid, e)
+    for mid in old_ids:
+        try:
+            await bot.delete_message(SUPPORT_CHAT_ID, mid)
+        except TelegramAPIError:
+            pass
+        db.execute("DELETE FROM ticket_relay WHERE chat_msg_id=?", (mid,))
+    db.commit()
+    return topic_id
+
+
+async def take_ticket(bot: Bot, tid, operator):
+    """Берёт тикет в работу. Если в группе включены Темы, тикет переезжает в отдельную ветку."""
+    t = get_ticket(tid)
+    if not t or t["status"] != "open":
+        return False
+    db.execute("UPDATE tickets SET status='progress', assignee=? WHERE id=?", (operator, tid))
+    db.commit()
+    topic_id = await move_to_topic(bot, tid) if TICKET_TOPICS else None
+    if topic_id is None:
+        await refresh_card(bot, tid)
+    try:
+        await bot.send_message(t["user_id"], T["ticket_taken"].format(id=tid))
+    except TelegramAPIError:
+        pass
+    return True
+
+
+async def finish_ticket(bot: Bot, tid):
+    """После закрытия тикета убирает его из группы: удаляет ветку или сообщения из очереди."""
+    t = get_ticket(tid)
+    if not t:
+        return
+    cleaned = False
+    if t["topic_id"]:
+        try:
+            await bot.delete_forum_topic(SUPPORT_CHAT_ID, t["topic_id"])
+            cleaned = True
+        except TelegramAPIError as e:
+            logging.warning("Не удалось удалить ветку тикета #%s: %s. Нужны права «Управление темами».", tid, e)
+            try:
+                await bot.close_forum_topic(SUPPORT_CHAT_ID, t["topic_id"])
+            except TelegramAPIError:
+                pass
+    else:
+        rows = db.execute("SELECT chat_msg_id FROM ticket_relay WHERE ticket_id=?", (tid,)).fetchall()
+        cleaned = True
+        for r in rows:
+            try:
+                await bot.delete_message(SUPPORT_CHAT_ID, r["chat_msg_id"])
+            except TelegramAPIError:
+                if r["chat_msg_id"] == t["card_msg_id"]:
+                    cleaned = False
+    if cleaned:
+        db.execute("DELETE FROM ticket_relay WHERE ticket_id=?", (tid,))
+        db.execute("UPDATE tickets SET card_msg_id=NULL WHERE id=?", (tid,))
+        db.commit()
+    else:
+        await refresh_card(bot, tid)
 
 
 # ───────────────────────── СОСТОЯНИЯ ─────────────────────────
@@ -588,18 +707,9 @@ async def cb_user_close(call: CallbackQuery, bot: Bot):
         return
     db.execute("UPDATE tickets SET status='closed' WHERE id=?", (tid,))
     db.commit()
-    await refresh_card(bot, tid)
-    try:
-        await bot.send_message(
-            SUPPORT_CHAT_ID,
-            f"🟢 Игрок закрыл тикет #{tid}.",
-            reply_to_message_id=t["card_msg_id"],
-            message_thread_id=SUPPORT_THREAD_ID,
-        )
-    except TelegramAPIError:
-        pass
     await call.answer("Тикет закрыт.")
     await call.message.answer(T["ticket_closed_user"].format(id=tid))
+    await finish_ticket(bot, tid)
 
 
 # ───────────────────────── ТИКЕТЫ: ОПЕРАТОРЫ ─────────────────────────
@@ -614,14 +724,11 @@ async def cb_take(call: CallbackQuery, bot: Bot):
     if not t or t["status"] == "closed":
         await call.answer("Тикет уже закрыт.", show_alert=True)
         return
-    db.execute("UPDATE tickets SET status='progress', assignee=? WHERE id=?", (person(call.from_user), tid))
-    db.commit()
-    await refresh_card(bot, tid)
-    await call.answer("Вы взяли тикет в работу.")
-    try:
-        await bot.send_message(t["user_id"], T["ticket_taken"].format(id=tid))
-    except TelegramAPIError:
-        pass
+    if t["status"] != "open":
+        await call.answer("Тикет уже в работе.")
+        return
+    await call.answer("Тикет взят в работу.")
+    await take_ticket(bot, tid, person(call.from_user))
 
 
 @ops_router.callback_query(F.data.startswith("t_close:"), F.message.chat.id == SUPPORT_CHAT_ID)
@@ -640,38 +747,49 @@ async def cb_op_close(call: CallbackQuery, bot: Bot):
         (person(call.from_user), tid),
     )
     db.commit()
-    await refresh_card(bot, tid)
     await call.answer("Тикет закрыт.")
     try:
         await bot.send_message(t["user_id"], T["ticket_closed_user"].format(id=tid))
     except TelegramAPIError:
         pass
+    await finish_ticket(bot, tid)
 
 
-# Ответ оператора: «Ответить» на карточку или пересланное сообщение тикета
-@ops_router.message(F.chat.id == SUPPORT_CHAT_ID, F.reply_to_message)
-async def operator_reply(message: Message, bot: Bot):
-    row = db.execute(
-        "SELECT t.* FROM ticket_relay r JOIN tickets t ON t.id = r.ticket_id WHERE r.chat_msg_id=?",
-        (message.reply_to_message.message_id,),
-    ).fetchone()
+# Сообщения операторов в группе: в ветке тикета пересылаются игроку сразу,
+# в очереди (общая ветка) нужно нажать «Ответить» на карточку или сообщение тикета.
+@ops_router.message(F.chat.id == SUPPORT_CHAT_ID, F.content_type.in_(RELAY_TYPES))
+async def operator_message(message: Message, bot: Bot):
+    if message.text and message.text.startswith("/"):
+        return
+    row = None
+    if message.is_topic_message and message.message_thread_id:
+        row = db.execute("SELECT * FROM tickets WHERE topic_id=?", (message.message_thread_id,)).fetchone()
+    if row is None and message.reply_to_message:
+        row = db.execute(
+            "SELECT t.* FROM ticket_relay r JOIN tickets t ON t.id = r.ticket_id WHERE r.chat_msg_id=?",
+            (message.reply_to_message.message_id,),
+        ).fetchone()
     if not row:
         return
     if row["status"] == "closed":
         await message.reply(f"Тикет #{row['id']} уже закрыт.")
         return
+    moved = False
+    if row["status"] == "open":
+        await take_ticket(bot, row["id"], person(message.from_user))
+        moved = bool(get_ticket(row["id"])["topic_id"])
     try:
         await bot.send_message(row["user_id"], T["operator_reply"].format(id=row["id"]))
         await message.copy_to(row["user_id"])
     except TelegramForbiddenError:
         await message.reply("Не удалось доставить: игрок заблокировал бота.")
         return
-    if row["status"] == "open":
-        db.execute(
-            "UPDATE tickets SET status='progress', assignee=? WHERE id=?", (person(message.from_user), row["id"])
-        )
-        db.commit()
-        await refresh_card(bot, row["id"])
+    if moved:
+        # ответ был написан в очереди, а тикет уже переехал в свою ветку
+        try:
+            await message.delete()
+        except TelegramAPIError:
+            pass
 
 
 # ───────────────────────── СООБЩЕНИЯ ИГРОКА ВНЕ СОСТОЯНИЙ ─────────────────────────
@@ -685,8 +803,9 @@ async def user_message(message: Message, bot: Bot):
     if flooding(message.from_user.id):
         await message.answer(T["flood"])
         return
+    thread = t["topic_id"] or SUPPORT_THREAD_ID
     try:
-        forwarded = await message.forward(SUPPORT_CHAT_ID, message_thread_id=SUPPORT_THREAD_ID)
+        forwarded = await message.forward(SUPPORT_CHAT_ID, message_thread_id=thread)
         link_msg(forwarded.message_id, t["id"])
     except TelegramAPIError:
         logging.exception("Не удалось переслать сообщение в тикет")
