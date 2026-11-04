@@ -24,7 +24,7 @@
 
 | Переменная | Описание |
 |-----------|----------|
-| `BOT_TOKEN` | 8868354676:AAHR-M15Q502kjzWZk6ak1VA6TKZ4pBvras |
+| `BOT_TOKEN` | 8868354676:AAFF3u0w7y_k80X9EphALrwb1n5uY_qjc3k |
 | `SUPPORT_CHAT_ID` | ID группы операторов (узнать командой `/chatid` в группе) |
 | `PROJECT_NAME` | FlinRPbot |
 | `SITE_URL`, `FORUM_URL`, `SHOP_URL` | ссылки для кнопок; пустые кнопки не показываются |
