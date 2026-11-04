@@ -32,12 +32,13 @@ from aiogram.types import (
 )
 
 # ───────────────────────── НАСТРОЙКИ ─────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8868354676:AAFF3u0w7y_k80X9EphALrwb1n5uY_qjc3k")
-SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "-1004390723972"))  # группа операторов
-PROJECT_NAME = os.getenv("PROJECT_NAME", "FlinRP")
-SITE_URL = os.getenv("SITE_URL", "https://flin-rp.online/#")
-FORUM_URL = os.getenv("FORUM_URL", "https://flin-rp.online/forum/")
-SHOP_URL = os.getenv("SHOP_URL", "https://flin-rp.online/#donate")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "0"))  # группа операторов
+SUPPORT_THREAD_ID = int(os.getenv("SUPPORT_THREAD_ID", "0")) or None  # ветка (тема) для тикетов, необязательно
+PROJECT_NAME = os.getenv("PROJECT_NAME", "Мой проект")
+SITE_URL = os.getenv("SITE_URL", "")
+FORUM_URL = os.getenv("FORUM_URL", "")
+SHOP_URL = os.getenv("SHOP_URL", "")
 BANNER_PATH = os.getenv("BANNER_PATH", "banner.jpg")  # картинка над меню
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
@@ -45,6 +46,7 @@ DB_PATH = os.getenv("DB_PATH", "bot.db")
 TICKET_CATEGORIES = [
     "🔐 Проблема с аккаунтом",
     "💳 Донат / оплата",
+    "🚨 Жалоба на игрока",
     "🐞 Баг / ошибка",
     "❓ Другое",
 ]
@@ -337,7 +339,10 @@ user_router.message.filter(F.chat.type == "private")
 # ───────────────────────── ОБЩЕЕ ─────────────────────────
 @common_router.message(Command("chatid"))
 async def cmd_chatid(message: Message):
-    await message.answer(f"ID этого чата: <code>{message.chat.id}</code>")
+    text = f"ID этого чата: <code>{message.chat.id}</code>"
+    if message.is_topic_message and message.message_thread_id:
+        text += f"\nID этой ветки: <code>{message.message_thread_id}</code>"
+    await message.answer(text)
 
 
 @user_router.message(CommandStart())
@@ -530,12 +535,15 @@ async def ticket_create(message: Message, state: FSMContext, bot: Bot):
     tid = cur.lastrowid
     try:
         card = await bot.send_message(
-            SUPPORT_CHAT_ID, card_text(get_ticket(tid)), reply_markup=ops_kb(tid, "open")
+            SUPPORT_CHAT_ID,
+            card_text(get_ticket(tid)),
+            reply_markup=ops_kb(tid, "open"),
+            message_thread_id=SUPPORT_THREAD_ID,
         )
         link_msg(card.message_id, tid)
         db.execute("UPDATE tickets SET card_msg_id=? WHERE id=?", (card.message_id, tid))
         db.commit()
-        forwarded = await message.forward(SUPPORT_CHAT_ID)
+        forwarded = await message.forward(SUPPORT_CHAT_ID, message_thread_id=SUPPORT_THREAD_ID)
         link_msg(forwarded.message_id, tid)
     except TelegramAPIError:
         logging.exception("Не удалось отправить тикет в группу поддержки")
@@ -584,7 +592,10 @@ async def cb_user_close(call: CallbackQuery, bot: Bot):
     await refresh_card(bot, tid)
     try:
         await bot.send_message(
-            SUPPORT_CHAT_ID, f"🟢 Игрок закрыл тикет #{tid}.", reply_to_message_id=t["card_msg_id"]
+            SUPPORT_CHAT_ID,
+            f"🟢 Игрок закрыл тикет #{tid}.",
+            reply_to_message_id=t["card_msg_id"],
+            message_thread_id=SUPPORT_THREAD_ID,
         )
     except TelegramAPIError:
         pass
@@ -676,7 +687,7 @@ async def user_message(message: Message, bot: Bot):
         await message.answer(T["flood"])
         return
     try:
-        forwarded = await message.forward(SUPPORT_CHAT_ID)
+        forwarded = await message.forward(SUPPORT_CHAT_ID, message_thread_id=SUPPORT_THREAD_ID)
         link_msg(forwarded.message_id, t["id"])
     except TelegramAPIError:
         logging.exception("Не удалось переслать сообщение в тикет")
