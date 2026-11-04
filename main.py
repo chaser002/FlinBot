@@ -32,13 +32,13 @@ from aiogram.types import (
 )
 
 # ───────────────────────── НАСТРОЙКИ ─────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8868354676:AAFF3u0w7y_k80X9EphALrwb1n5uY_qjc3k")
 SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "0"))  # группа операторов
 SUPPORT_THREAD_ID = int(os.getenv("SUPPORT_THREAD_ID", "0")) or None  # ветка (тема) для тикетов, необязательно
-PROJECT_NAME = os.getenv("PROJECT_NAME", "Мой проект")
-SITE_URL = os.getenv("SITE_URL", "")
-FORUM_URL = os.getenv("FORUM_URL", "")
-SHOP_URL = os.getenv("SHOP_URL", "")
+PROJECT_NAME = os.getenv("PROJECT_NAME", "FlinRP")
+SITE_URL = os.getenv("SITE_URL", "https://flin-rp.online/#")
+FORUM_URL = os.getenv("FORUM_URL", "https://flin-rp.online/forum/")
+SHOP_URL = os.getenv("SHOP_URL", "https://flin-rp.online/#donate")
 BANNER_PATH = os.getenv("BANNER_PATH", "banner.jpg")  # картинка над меню
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
