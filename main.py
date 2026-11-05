@@ -32,7 +32,7 @@ from aiogram.types import (
 )
 
 # ───────────────────────── НАСТРОЙКИ ─────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8868354676:AAFF3u0w7y_k80X9EphALrwb1n5uY_qjc3k")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8868354676:AAHQbcroqO2b270CDH5KJESOgrRXd7bmBaQ")
 SUPPORT_CHAT_ID = int(os.getenv("SUPPORT_CHAT_ID", "-1004390723972"))  # группа операторов
 SUPPORT_THREAD_ID = int(os.getenv("SUPPORT_THREAD_ID", "3")) or None  # ветка-очередь для новых тикетов, необязательно
 TICKET_TOPICS = os.getenv("TICKET_TOPICS", "1") != "0"  # отдельная ветка на каждый взятый тикет (нужны Темы в группе)
